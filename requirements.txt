@@ -1,0 +1,8 @@
+mysql-connector-python
+anthropic
+matplotlib
+pandas
+seaborn
+reportlab
+Pillow
+numpy
