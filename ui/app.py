@@ -107,7 +107,7 @@ def run_analysis():
     is_running = True
     log_lines = []
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = "/app/output/run_" + timestamp
+    output_dir = "/app/ui/output/run_" + timestamp
     os.makedirs(output_dir + "/charts", exist_ok=True)
     env = os.environ.copy()
     env["OUTPUT_DIR"] = output_dir
@@ -140,7 +140,7 @@ def logs():
 @app.route("/history")
 def history():
     runs = []
-    for pdf in sorted(glob.glob("/app/output/run_*/report.pdf"), reverse=True):
+    for pdf in sorted(glob.glob("/app/ui/output/run_*/report.pdf"), reverse=True):
         run_dir = os.path.dirname(pdf)
         run_name = os.path.basename(run_dir)
         ts = run_name.replace("run_", "")
@@ -149,11 +149,19 @@ def history():
         except:
             dt = ts
         runs.append({"name": run_name, "date": dt})
+    # Pārbaudi arī noklusējuma vietu
+    if os.path.exists("/app/ui/output/report.pdf"):
+        mtime = os.path.getmtime("/app/ui/output/report.pdf")
+        dt = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M:%S")
+        runs.append({"name": "default", "date": dt})
     return jsonify({"runs": runs})
 
 @app.route("/download/<run_name>")
 def download(run_name):
-    pdf_path = "/app/output/" + run_name + "/report.pdf"
+    if run_name == "default":
+        pdf_path = "/app/ui/output/report.pdf"
+    else:
+        pdf_path = "/app/ui/output/" + run_name + "/report.pdf"
     if os.path.exists(pdf_path):
         return send_file(pdf_path, as_attachment=True, download_name="atskaite_" + run_name + ".pdf")
     return "Nav atrasts", 404
