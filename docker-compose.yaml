@@ -8,11 +8,35 @@ services:
       - DB_PORT=${DB_PORT:-3306}
       - DB_USER=${DB_USER:-fita}
       - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
+      - DB_NAME=${DB_NAME:-direct_payments}
     volumes:
-      - ./output:/app/output
+      - shared_output:/app/output
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+  ui:
+    build: ./ui
+    container_name: data-analysis-ui
+    ports:
+      - "5000:5000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DB_HOST=${DB_HOST:-87.110.123.151}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-fita}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-direct_payments}
+    volumes:
+      - shared_output:/app/output
+      - .:/app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  shared_output:
