@@ -6,3 +6,4 @@ seaborn
 reportlab
 Pillow
 numpy
+requests

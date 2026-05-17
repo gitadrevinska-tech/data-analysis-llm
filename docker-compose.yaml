@@ -1,0 +1,18 @@
+services:
+  analyzer:
+    build: .
+    container_name: data-analysis-llm
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DB_HOST=${DB_HOST:-87.110.123.151}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-fita}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+    volumes:
+      - ./output:/app/output
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
