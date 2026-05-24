@@ -10,7 +10,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME:-direct_payments}
     volumes:
-      - shared_output:/app/output
+      - shared_output:/app/ui/output
     logging:
       driver: "json-file"
       options:
@@ -30,7 +30,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME:-direct_payments}
     volumes:
-      - shared_output:/app/output
+      - shared_output:/app/ui/output
       - .:/app
     logging:
       driver: "json-file"

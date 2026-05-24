@@ -1,170 +1,560 @@
-from flask import Flask, jsonify, send_file, Response
+from flask import Flask, jsonify, send_file, Response, request
 import subprocess, threading, os, glob
 from datetime import datetime
-
-app = Flask(__name__)
+import mysql.connector
+ 
+app = Flask(__name__, template_folder='/app/ui/templates')
 log_lines = []
 is_running = False
-
+ 
 HTML = """<!DOCTYPE html>
 <html lang="lv">
 <head>
     <meta charset="UTF-8">
     <title>Datu Analīze ar LLM</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg:       #0b0d14;
+            --surface:  #111420;
+            --border:   #1e2235;
+            --accent:   #4f8ef7;
+            --accent2:  #7c5cfc;
+            --success:  #34d399;
+            --warning:  #f59e0b;
+            --error:    #f87171;
+            --text:     #c9d1e0;
+            --muted:    #4b5474;
+            --mono:     'IBM Plex Mono', monospace;
+            --sans:     'IBM Plex Sans', sans-serif;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
-        .header { background: #1a1d2e; padding: 24px 40px; border-bottom: 1px solid #2d3148; }
-        .header h1 { font-size: 22px; color: #7c8cf8; }
-        .header p { font-size: 13px; color: #6b7280; margin-top: 4px; }
-        .container { max-width: 1000px; margin: 40px auto; padding: 0 24px; }
-        .card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px; padding: 28px; margin-bottom: 24px; }
-        .card h2 { font-size: 13px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 20px; }
-        .btn { padding: 12px 32px; border-radius: 8px; border: none; font-size: 15px; cursor: pointer; font-weight: 600; background: #7c8cf8; color: white; }
-        .btn:hover { background: #6470e8; }
-        .btn:disabled { background: #3d4268; color: #6b7280; cursor: not-allowed; }
-        .status { display: inline-block; margin-left: 16px; font-size: 14px; color: #6b7280; vertical-align: middle; }
-        .log-box { background: #0f1117; border: 1px solid #2d3148; border-radius: 8px; padding: 16px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 13px; line-height: 1.6; }
-        .history-table { width: 100%; border-collapse: collapse; }
-        .history-table th { text-align: left; padding: 10px 16px; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 1px solid #2d3148; }
-        .history-table td { padding: 14px 16px; border-bottom: 1px solid #1e2235; font-size: 14px; }
-        .download-btn { padding: 6px 16px; background: transparent; border: 1px solid #7c8cf8; color: #7c8cf8; border-radius: 6px; cursor: pointer; font-size: 13px; }
-        .download-btn:hover { background: #7c8cf8; color: white; }
-        .empty { color: #6b7280; font-size: 14px; text-align: center; padding: 24px; }
+        body { font-family: var(--sans); background: var(--bg); color: var(--text); min-height: 100vh; }
+ 
+        /* ── HEADER ── */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 40px;
+            display: flex; align-items: center; gap: 16px;
+        }
+        .header-icon { font-size: 22px; }
+        .header h1 { font-size: 18px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
+        .header p  { font-size: 12px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+        .header-badge {
+            margin-left: auto; font-family: var(--mono); font-size: 11px;
+            background: rgba(79,142,247,.12); color: var(--accent);
+            border: 1px solid rgba(79,142,247,.25); border-radius: 20px;
+            padding: 4px 12px;
+        }
+ 
+        /* ── LAYOUT ── */
+        .container { max-width: 1100px; margin: 36px auto; padding: 0 28px; display: grid; grid-template-columns: 380px 1fr; gap: 24px; }
+        .col-left  { display: flex; flex-direction: column; gap: 20px; }
+        .col-right { display: flex; flex-direction: column; gap: 20px; }
+ 
+        /* ── CARD ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+            position: relative; overflow: hidden;
+        }
+        .card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            opacity: 0; transition: opacity .3s;
+        }
+        .card:hover::before { opacity: 1; }
+        .card-title {
+            font-size: 10px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase;
+            color: var(--muted); margin-bottom: 18px; display: flex; align-items: center; gap: 8px;
+        }
+        .card-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+ 
+        /* ── FORM ── */
+        .field { margin-bottom: 14px; }
+        .field label { display: block; font-size: 11px; color: var(--muted); font-family: var(--mono); margin-bottom: 6px; letter-spacing: .5px; }
+        .field input, .field select {
+            width: 100%; padding: 10px 13px;
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text); font-family: var(--mono); font-size: 13px;
+            transition: border-color .2s, box-shadow .2s;
+            -webkit-appearance: none;
+        }
+        .field input:focus, .field select:focus {
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79,142,247,.12);
+        }
+        .field select option { background: #1a1d2e; }
+        .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+ 
+        /* ── DB STATUS ── */
+        .db-status {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 12px; font-family: var(--mono);
+            padding: 8px 12px; border-radius: 8px;
+            background: rgba(255,255,255,.03); border: 1px solid var(--border);
+            margin-bottom: 14px;
+        }
+        .db-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+        .db-dot.ok  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+        .db-dot.err { background: var(--error);   box-shadow: 0 0 6px var(--error); }
+        .db-dot.testing { background: var(--warning); animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+ 
+        /* ── BUTTONS ── */
+        .btn-row { display: flex; gap: 10px; margin-top: 4px; }
+        .btn {
+            padding: 10px 20px; border-radius: 8px; border: none;
+            font-size: 13px; font-weight: 600; cursor: pointer;
+            font-family: var(--sans); transition: all .2s;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .btn-primary { background: var(--accent); color: #fff; flex: 1; justify-content: center; }
+        .btn-primary:hover:not(:disabled) { background: #3a7de8; box-shadow: 0 4px 16px rgba(79,142,247,.35); transform: translateY(-1px); }
+        .btn-primary:disabled { background: #1e2a4a; color: var(--muted); cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); padding: 10px 14px; }
+        .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+ 
+        /* ── LOG BOX ── */
+        .log-box {
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 10px; padding: 16px; height: 320px;
+            overflow-y: auto; font-family: var(--mono); font-size: 12px; line-height: 1.8;
+        }
+        .log-box::-webkit-scrollbar { width: 4px; }
+        .log-box::-webkit-scrollbar-track { background: transparent; }
+        .log-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .log-line { padding: 1px 0; }
+        .log-line.ok   { color: var(--success); }
+        .log-line.warn { color: var(--warning); }
+        .log-line.err  { color: var(--error); }
+        .log-line.sep  { color: var(--muted); }
+        .log-placeholder { color: var(--muted); font-size: 13px; display: flex; align-items: center; justify-content: center; height: 100%; gap: 8px; }
+ 
+        /* ── PROGRESS ── */
+        .progress-wrap { margin-bottom: 16px; }
+        .progress-label { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--mono); color: var(--muted); margin-bottom: 6px; }
+        .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 2px; transition: width .5s ease; width: 0%; }
+ 
+        /* ── HISTORY TABLE ── */
+        .hist-table { width: 100%; border-collapse: collapse; }
+        .hist-table th { text-align: left; padding: 10px 14px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); }
+        .hist-table td { padding: 13px 14px; border-bottom: 1px solid rgba(30,34,53,.7); font-size: 13px; }
+        .hist-table tr:last-child td { border-bottom: none; }
+        .hist-table tr:hover td { background: rgba(255,255,255,.02); }
+        .hist-db-tag {
+            font-family: var(--mono); font-size: 11px;
+            background: rgba(124,92,252,.12); color: #9d7ff8;
+            border: 1px solid rgba(124,92,252,.2); border-radius: 4px;
+            padding: 2px 8px;
+        }
+        .dl-btn {
+            padding: 5px 14px; background: transparent;
+            border: 1px solid rgba(79,142,247,.4); color: var(--accent);
+            border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--mono);
+            transition: all .2s;
+        }
+        .dl-btn:hover { background: var(--accent); color: #fff; }
+        .empty-state { color: var(--muted); font-size: 13px; text-align: center; padding: 32px; font-family: var(--mono); }
+ 
+        /* ── STATUS BADGE ── */
+        .run-status {
+            font-family: var(--mono); font-size: 11px;
+            padding: 3px 10px; border-radius: 20px;
+            display: inline-flex; align-items: center; gap: 5px;
+        }
+        .run-status.running { background: rgba(245,158,11,.1); color: var(--warning); border: 1px solid rgba(245,158,11,.2); }
+        .run-status.done    { background: rgba(52,211,153,.1); color: var(--success); border: 1px solid rgba(52,211,153,.2); }
+        .run-status.idle    { display: none; }
+ 
+        @media (max-width: 800px) {
+            .container { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Automatiska Datu Analize ar LLM</h1>
-        <p>MySQL databaze -> AI analize -> PDF atskaite</p>
+<div class="header">
+    <span class="header-icon">🤖</span>
+    <div>
+        <h1>Datu Analīze ar LLM</h1>
+        <p>MySQL → AI → PDF</p>
     </div>
-    <div class="container">
+    <div class="header-badge">v2.0</div>
+</div>
+ 
+<div class="container">
+    <!-- LEFT COLUMN -->
+    <div class="col-left">
+ 
+        <!-- DB CONFIG -->
         <div class="card">
-            <h2>Jauna Analize</h2>
-            <button class="btn" id="startBtn" onclick="startAnalysis()">Sakt Analizi</button>
-            <span class="status" id="status"></span>
+            <div class="card-title">Datubāzes konfigurācija</div>
+            <div class="field-row">
+                <div class="field">
+                    <label>HOST</label>
+                    <input type="text" id="dbHost" value="" placeholder="localhost">
+                </div>
+                <div class="field">
+                    <label>PORT</label>
+                    <input type="text" id="dbPort" value="3306" placeholder="3306">
+                </div>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label>LIETOTĀJS</label>
+                    <input type="text" id="dbUser" placeholder="root">
+                </div>
+                <div class="field">
+                    <label>PAROLE</label>
+                    <input type="password" id="dbPass" placeholder="••••••">
+                </div>
+            </div>
+            <div class="field">
+                <label>DATUBĀZE</label>
+                <select id="dbName">
+                    <option value="">— nospied "Savienoties" —</option>
+                </select>
+                <div class="field-hint">vai ievadi manuāli:</div>
+                <input type="text" id="dbNameManual" placeholder="datubāzes nosaukums" style="margin-top:6px">
+            </div>
+ 
+            <div class="db-status" id="dbStatus">
+                <div class="db-dot" id="dbDot"></div>
+                <span id="dbStatusText">Nav savienots</span>
+            </div>
+ 
+            <div class="btn-row">
+                <button class="btn btn-secondary" onclick="testConnection()">🔌 Savienoties</button>
+            </div>
         </div>
+ 
+        <!-- START ANALYSIS -->
         <div class="card">
-            <h2>Izpildes Zurnals</h2>
-            <div class="log-box" id="logBox"><div class="empty">Zurnals paradisies seit...</div></div>
+            <div class="card-title">Analīze</div>
+            <div style="margin-bottom:16px">
+                <div class="progress-wrap" id="progressWrap" style="display:none">
+                    <div class="progress-label"><span>Progress</span><span id="progressPct">0%</span></div>
+                    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                </div>
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="startBtn" onclick="startAnalysis()" disabled>
+                    <span id="startIcon">▶</span> Sākt Analīzi
+                </button>
+                <span class="run-status idle" id="runStatus"></span>
+            </div>
         </div>
-        <div class="card">
-            <h2>Parskatu Vesture</h2>
-            <div id="historyContainer"><div class="empty">Ielade...</div></div>
-        </div>
+ 
     </div>
-    <script>
-        var polling = null;
-        function startAnalysis() {
-            fetch('/start', {method: 'POST'})
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (data.status === 'already_running') { alert('Analize jau notiek!'); return; }
-                document.getElementById('startBtn').disabled = true;
-                document.getElementById('status').innerText = 'Analize notiek...';
-                document.getElementById('logBox').innerHTML = '';
-                polling = setInterval(fetchLogs, 1000);
+ 
+    <!-- RIGHT COLUMN -->
+    <div class="col-right">
+ 
+        <!-- LOG -->
+        <div class="card">
+            <div class="card-title">Izpildes žurnāls</div>
+            <div class="log-box" id="logBox">
+                <div class="log-placeholder">⬡ Žurnāls parādīsies šeit...</div>
+            </div>
+        </div>
+ 
+        <!-- HISTORY -->
+        <div class="card">
+            <div class="card-title">Pārskatu vēsture</div>
+            <div id="historyContainer"><div class="empty-state">Ielādē...</div></div>
+        </div>
+ 
+    </div>
+</div>
+ 
+<script>
+var polling = null;
+var totalLines = 0;
+ 
+// ── Load saved config ──
+window.onload = function() {
+    var saved = localStorage.getItem('dbConfig');
+    if (saved) {
+        try {
+            var c = JSON.parse(saved);
+            document.getElementById('dbHost').value = c.host || '';
+            document.getElementById('dbPort').value = c.port || '3306';
+            document.getElementById('dbUser').value = c.user || '';
+            document.getElementById('dbPass').value  = c.pass || '';
+            document.getElementById('dbNameManual').value = c.name || '';
+        } catch(e) {}
+    }
+    loadHistory();
+};
+ 
+// ── Test connection & load databases ──
+function testConnection() {
+    setDbStatus('testing', '⏳ Savienojas...');
+    var cfg = getConfig();
+    fetch('/test_connection', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cfg)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            setDbStatus('ok', '✓ Savienots — ' + data.databases.length + ' datubāzes');
+            var sel = document.getElementById('dbName');
+            sel.innerHTML = '<option value="">— izvēlies —</option>';
+            data.databases.forEach(function(db) {
+                var opt = document.createElement('option');
+                opt.value = db; opt.textContent = db;
+                sel.appendChild(opt);
             });
+            document.getElementById('startBtn').disabled = false;
+            // Save config
+            cfg.pass = document.getElementById('dbPass').value;
+            localStorage.setItem('dbConfig', JSON.stringify(cfg));
+        } else {
+            setDbStatus('err', '✗ Kļūda: ' + data.error);
         }
-        function fetchLogs() {
-            fetch('/logs')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                var box = document.getElementById('logBox');
-                box.innerHTML = data.logs.map(function(line) {
-                    return '<div>' + line + '</div>';
-                }).join('');
-                box.scrollTop = box.scrollHeight;
-                if (!data.running && data.logs.length > 0) {
-                    clearInterval(polling);
-                    document.getElementById('startBtn').disabled = false;
-                    document.getElementById('status').innerText = 'Analize pabeigta!';
-                    loadHistory();
-                }
-            });
+    })
+    .catch(function() { setDbStatus('err', '✗ Savienojums neizdevās'); });
+}
+ 
+function setDbStatus(state, text) {
+    var dot  = document.getElementById('dbDot');
+    var span = document.getElementById('dbStatusText');
+    dot.className  = 'db-dot ' + state;
+    span.textContent = text;
+}
+ 
+function getConfig() {
+    return {
+        host: document.getElementById('dbHost').value || 'localhost',
+        port: document.getElementById('dbPort').value || '3306',
+        user: document.getElementById('dbUser').value,
+        name: document.getElementById('dbNameManual').value ||
+              document.getElementById('dbName').value
+    };
+}
+ 
+// ── Start analysis ──
+function startAnalysis() {
+    var cfg = getConfig();
+    if (!cfg.name) { alert('Izvēlies datubāzi!'); return; }
+    cfg.pass = document.getElementById('dbPass').value;
+ 
+    fetch('/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cfg)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'already_running') { alert('Analīze jau notiek!'); return; }
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('startIcon').textContent = '⟳';
+        setRunStatus('running', '⟳ Notiek...');
+        document.getElementById('logBox').innerHTML = '';
+        document.getElementById('progressWrap').style.display = 'block';
+        totalLines = 0;
+        polling = setInterval(fetchLogs, 1000);
+    });
+}
+ 
+function setRunStatus(cls, text) {
+    var el = document.getElementById('runStatus');
+    el.className = 'run-status ' + cls;
+    el.innerHTML = text;
+}
+ 
+// ── Log polling ──
+function fetchLogs() {
+    fetch('/logs')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var box = document.getElementById('logBox');
+        if (data.logs.length !== totalLines) {
+            totalLines = data.logs.length;
+            box.innerHTML = data.logs.map(function(line) {
+                var cls = 'log-line';
+                if (line.includes('✅') || line.includes('PABEIGTS')) cls += ' ok';
+                else if (line.includes('⚠️') || line.includes('KĻŪDA')) cls += ' warn';
+                else if (line.includes('✗') || line.includes('ERROR'))  cls += ' err';
+                else if (line.startsWith('=') || line.startsWith('-'))   cls += ' sep';
+                return '<div class="' + cls + '">' + escHtml(line) + '</div>';
+            }).join('');
+            box.scrollTop = box.scrollHeight;
+            // Estimate progress
+            var pct = Math.min(95, Math.round(totalLines / 0.6));
+            setProgress(pct);
         }
-        function loadHistory() {
-            fetch('/history')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                var c = document.getElementById('historyContainer');
-                if (data.runs.length === 0) { c.innerHTML = '<div class="empty">Vel nav neviens parskats</div>'; return; }
-                var rows = data.runs.map(function(r, i) {
-    var btn = '<button class="download-btn" onclick="download(this.dataset.name)" data-name="' + r.name + '">Lejupieladet PDF</button>';
-    return '<tr><td>' + (data.runs.length - i) + '</td><td>' + r.date + '</td><td>' + btn + '</td></tr>';
-}).join('');
-                c.innerHTML = '<table class="history-table"><thead><tr><th>#</th><th>Datums</th><th>Lejupieladet</th></tr></thead><tbody>' + rows + '</tbody></table>';
-            });
+        if (!data.running && data.logs.length > 0) {
+            clearInterval(polling);
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('startIcon').textContent = '▶';
+            setRunStatus('done', '✓ Pabeigts');
+            setProgress(100);
+            setTimeout(function() {
+                document.getElementById('progressWrap').style.display = 'none';
+                setRunStatus('idle', '');
+            }, 3000);
+            loadHistory();
         }
-        function download(name) { window.location.href = '/download/' + name; }
-        loadHistory();
-    </script>
+    });
+}
+ 
+function setProgress(pct) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressPct').textContent = pct + '%';
+}
+ 
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/[<]/g,'&lt;').replace(/[>]/g,'&gt;');
+}
+ 
+// ── History ──
+function loadHistory() {
+    fetch('/history')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var c = document.getElementById('historyContainer');
+        if (!data.runs || data.runs.length === 0) {
+            c.innerHTML = '<div class="empty-state">Vēl nav neviena pārskata</div>'; return;
+        }
+        var rows = data.runs.map(function(r, i) {
+            var dbTag = r.database ? '<span class="hist-db-tag">' + r.database + '</span>' : '';
+            var btn = "<button class='dl-btn' onclick='downloadRun(\"" + r.name + "\")'>\u2193 PDF</button>";
+            return '<tr><td>' + (data.runs.length - i) + '</td><td>' + r.date + '</td><td>' + dbTag + '</td><td>' + btn + '</td></tr>';
+        }).join('');
+        c.innerHTML = '<table class="hist-table"><thead><tr><th>#</th><th>Datums</th><th>Datubāze</th><th>Lejupielādēt</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    });
+}
+ 
+function downloadRun(name) { window.location.href = '/download/' + name; }
+</script>
 </body>
 </html>"""
-
-def run_analysis():
+ 
+ 
+def run_analysis(db_config: dict):
     global log_lines, is_running
     is_running = True
     log_lines = []
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = "/app/ui/output/run_" + timestamp
+    database = db_config.get("name", "unknown")
+    output_dir = f"/app/ui/output/run_{timestamp}"
     os.makedirs(output_dir + "/charts", exist_ok=True)
+ 
     env = os.environ.copy()
-    env["OUTPUT_DIR"] = output_dir
-    env["CHARTS_DIR"] = output_dir + "/charts"
-    env["PDF_OUTPUT"] = output_dir + "/report.pdf"
-    process = subprocess.Popen(["python", "/app/main.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    env["OUTPUT_DIR"]   = output_dir
+    env["CHARTS_DIR"]   = output_dir + "/charts"
+    env["PDF_OUTPUT"]   = output_dir + "/report.pdf"
+    env["DB_HOST"]      = db_config.get("host", "")
+    env["DB_PORT"]      = str(db_config.get("port", "3306"))
+    env["DB_USER"]      = db_config.get("user", "")
+    env["DB_PASSWORD"]  = db_config.get("pass", "")
+    env["DB_NAME"]      = database
+ 
+    # Save metadata (db name) alongside the run
+    meta_path = output_dir + "/meta.txt"
+    with open(meta_path, "w") as f:
+        f.write(database)
+ 
+    process = subprocess.Popen(
+        ["python", "/app/main.py"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, env=env
+    )
     for line in process.stdout:
         log_lines.append(line.rstrip())
     process.wait()
     is_running = False
-
+ 
+ 
 @app.route("/")
 def index():
-    return Response(HTML, mimetype='text/html')
-
+    html_path = "/app/ui/templates/index.html"
+    if os.path.exists(html_path):
+        with open(html_path, encoding="utf-8") as f:
+            return Response(f.read(), mimetype="text/html")
+    return Response(HTML, mimetype="text/html")
+ 
+ 
+@app.route("/test_connection", methods=["POST"])
+def test_connection():
+    data = request.get_json()
+    try:
+        conn = mysql.connector.connect(
+            host=data.get("host", "localhost"),
+            port=int(data.get("port", 3306)),
+            user=data.get("user", ""),
+            password=data.get("pass", ""),
+        )
+        cur = conn.cursor()
+        cur.execute("SHOW DATABASES")
+        skip = {"information_schema", "mysql", "performance_schema", "sys"}
+        dbs = [row[0] for row in cur.fetchall() if row[0] not in skip]
+        conn.close()
+        return jsonify({"ok": True, "databases": dbs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+ 
+ 
 @app.route("/start", methods=["POST"])
 def start():
     global is_running
     if is_running:
         return jsonify({"status": "already_running"})
-    thread = threading.Thread(target=run_analysis)
+    db_config = request.get_json() or {}
+    thread = threading.Thread(target=run_analysis, args=(db_config,))
     thread.daemon = True
     thread.start()
     return jsonify({"status": "started"})
-
+ 
+ 
 @app.route("/logs")
 def logs():
     return jsonify({"logs": log_lines, "running": is_running})
-
+ 
+ 
 @app.route("/history")
 def history():
     runs = []
     for pdf in sorted(glob.glob("/app/ui/output/run_*/report.pdf"), reverse=True):
-        run_dir = os.path.dirname(pdf)
+        run_dir  = os.path.dirname(pdf)
         run_name = os.path.basename(run_dir)
         ts = run_name.replace("run_", "")
         try:
             dt = datetime.strptime(ts, "%Y%m%d_%H%M%S").strftime("%d.%m.%Y %H:%M:%S")
         except:
             dt = ts
-        runs.append({"name": run_name, "date": dt})
-    # Pārbaudi arī noklusējuma vietu
+        # Read saved db name
+        db_name = ""
+        meta = run_dir + "/meta.txt"
+        if os.path.exists(meta):
+            with open(meta) as f:
+                db_name = f.read().strip()
+        runs.append({"name": run_name, "date": dt, "database": db_name})
     if os.path.exists("/app/ui/output/report.pdf"):
         mtime = os.path.getmtime("/app/ui/output/report.pdf")
         dt = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M:%S")
-        runs.append({"name": "default", "date": dt})
+        runs.append({"name": "default", "date": dt, "database": ""})
     return jsonify({"runs": runs})
-
+ 
+ 
 @app.route("/download/<run_name>")
 def download(run_name):
     if run_name == "default":
         pdf_path = "/app/ui/output/report.pdf"
     else:
-        pdf_path = "/app/ui/output/" + run_name + "/report.pdf"
+        pdf_path = f"/app/ui/output/{run_name}/report.pdf"
     if os.path.exists(pdf_path):
-        return send_file(pdf_path, as_attachment=True, download_name="atskaite_" + run_name + ".pdf")
+        return send_file(pdf_path, as_attachment=True, download_name=f"atskaite_{run_name}.pdf")
     return "Nav atrasts", 404
-
+ 
+ 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
